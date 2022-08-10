@@ -25,7 +25,10 @@
     "jenkins",
     "bitbucket"
   ],
-  "author": "vmarchaud",
+  "author": "jstarpl",
+  "contributors": [
+    "vmarchaud"
+  ],
   "license": "MIT",
   "bugs": {
     "url": "https://github.com/jstarpl/pm2-gitpoll/issues"
@@ -46,6 +49,13 @@
         "service": "github"
       }
     },
-    "pollInterval": 6000000
-  }
+    "pollInterval": 600000
+  },
+  "apps": [
+    {
+      "script": "index.js",
+      "merge_logs": true,
+      "max_memory_restart": "200M"
+    }
+  ]
 }
