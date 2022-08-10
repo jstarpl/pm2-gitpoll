@@ -63,7 +63,7 @@ Worker.prototype._fetchRepositories = function () {
   const allApps = Object.entries(self.apps)
 
   for (const [targetName, targetApp] of allApps) {
-    updateCWD(targetApp, () => {
+    updateCWD(targetName, targetApp, () => {
       vizion.isUpToDate({
         folder: targetApp.cwd,
       }, (err, meta) => {
@@ -104,7 +104,7 @@ Worker.prototype.updateApp = function (targetName) {
   };
   var phases = {
     resolveCWD: function resolveCWD(cb) {
-      updateCWD(targetApp, cb);
+      updateCWD(targetName, targetApp, cb);
     },
     pullTheApplication: function pullTheApplication(cb) {
       vizion.update({
@@ -189,7 +189,7 @@ function spawnAsExec(command, options, cb) {
   child.on('close', cb);
 }
 
-function updateCWD(targetApp, cb) {
+function updateCWD(targetName, targetApp, cb) {
   // if cwd is provided, we expect that it isnt a pm2 app
   if (targetApp.cwd) return cb();
 
