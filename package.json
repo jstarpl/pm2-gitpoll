@@ -1,14 +1,14 @@
 {
-  "name": "pm2-githook",
-  "version": "2.0.0",
-  "description": "receive http hook from multiple source and ask pm2 to reload the application for you",
+  "name": "pm2-gitpoll",
+  "version": "0.0.1",
+  "description": "poll repository and ask pm2 to reload the application for you",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/vmarchaud/pm2-githook.git"
+    "url": "git+https://github.com/jstarpl/pm2-gitpoll.git"
   },
   "keywords": [
     "pm2",
@@ -28,12 +28,11 @@
   "author": "vmarchaud",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/vmarchaud/pm2-githook/issues"
+    "url": "https://github.com/jstarpl/pm2-gitpoll/issues"
   },
-  "homepage": "https://github.com/vmarchaud/pm2-githook#readme",
+  "homepage": "https://github.com/jstarpl/pm2-gitpoll#readme",
   "dependencies": {
     "async": "^2.1.1",
-    "ipaddr.js": "^1.2.0",
     "pm2": "^5.2.0",
     "pmx": "^1.6.7",
     "vizion": "^0.2.13"
@@ -47,6 +46,6 @@
         "service": "github"
       }
     },
-    "port": 8888
+    "pollInterval": 6000000
   }
 }

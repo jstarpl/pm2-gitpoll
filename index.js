@@ -4,15 +4,14 @@
  * can be found in the LICENSE file.
  */
 
-var http = require('http');
-var crypto = require('crypto');
 var pmx = require('pmx');
 var pm2 = require('pm2');
-var util = require('util');
 var spawn = require('child_process').spawn;
 var async = require('async');
 var vizion = require('vizion');
-var ipaddr = require('ipaddr.js');
+const { setInterval } = require('timers');
+
+const POLL_INTERVAL = 10 * 60 * 1000;
 
 /**
  * Init pmx module
@@ -41,65 +40,52 @@ var Worker = function (opts) {
   }
 
   this.opts = opts;
-  this.port = this.opts.port || 8888;
+  this.pollInterval = opts.pollInterval || POLL_INTERVAL;
   this.apps = opts.apps;
 
   if (typeof (this.apps) !== 'object') {
     this.apps = JSON.parse(this.apps);
   }
 
-  this.server = http.createServer(this._handleHttp.bind(this));
   return this;
 };
 
 /**
- * Main function for http server
+ * Main function for checking all repositories
  *
  * @param req The Request
  * @param res The Response
  * @private
  */
-Worker.prototype._handleHttp = function (req, res) {
+Worker.prototype._fetchRepositories = function () {
   var self = this;
 
-  // send instant answer since its useless to respond to the webhook
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.write('OK');
+  const allApps = Object.entries(self.apps)
 
-  // do something only with post request
-  if (req.method !== 'POST') {
-    res.end();
-    return;
+  for (const [targetName, targetApp] of allApps) {
+    updateCWD(targetApp, () => {
+      vizion.isUpToDate({
+        folder: targetApp.cwd,
+      }, (err, meta) => {
+        if (err) {
+          console.error('[%s] Could not fetch from remote %s: %s', new Date().toISOString(), targetName, err);
+          return;
+        }
+
+        if (!meta.is_up_to_date) {
+          self.updateApp(targetName);
+        }
+      })
+    })
   }
-
-  // get source ip
-  req.ip = req.headers['x-forwarded-for'] || (req.connection ? req.connection.remoteAddress : false) ||
-            (req.socket ? req.socket.remoteAddress : false) || ((req.connection && req.connection.socket)
-              ? req.connection.socket.remoteAddress : false) || '';
-  if (req.ip.indexOf('::ffff:') !== -1) {
-    req.ip = req.ip.replace('::ffff:', '');
-  }
-
-  // get the whole body before processing
-  req.body = '';
-  req.on('data', function (data) {
-    req.body += data;
-  }).on('end', function () {
-    self.processRequest(req);
-  });
-
-  res.end();
 };
 
 /**
  * Main function of the module
  *
- * @param req The Request of the call
+ * @param targetName The name of the app to be updated
  */
-Worker.prototype.processRequest = function (req) {
-  var targetName = reqToAppName(req);
-  if (targetName.length === 0) return;
-
+Worker.prototype.updateApp = function (targetName) {
   var targetApp = this.apps[targetName];
   if (!targetApp) return;
 
@@ -109,7 +95,7 @@ Worker.prototype.processRequest = function (req) {
     return;
   }
 
-  console.log('[%s] Received valid hook for app %s', new Date().toISOString(), targetName);
+  console.log('[%s] Found an update for app %s', new Date().toISOString(), targetName);
 
   var execOptions = {
     cwd: targetApp.cwd,
@@ -118,17 +104,7 @@ Worker.prototype.processRequest = function (req) {
   };
   var phases = {
     resolveCWD: function resolveCWD(cb) {
-      // if cwd is provided, we expect that it isnt a pm2 app
-      if (targetApp.cwd) return cb();
-
-      // try to get the cwd to execute it correctly
-      pm2.describe(targetName, function (err, apps) {
-        if (err || !apps || apps.length === 0) return cb(err || new Error('Application not found'));
-
-        // execute the actual command in the cwd of the application
-        targetApp.cwd = apps[0].pm_cwd ? apps[0].pm_cwd : apps[0].pm2_env.pm_cwd;
-        return cb();
-      });
+      updateCWD(targetApp, cb);
     },
     pullTheApplication: function pullTheApplication(cb) {
       vizion.update({
@@ -167,134 +143,15 @@ Worker.prototype.processRequest = function (req) {
 };
 
 /**
- * Checks if a request is valid for an app.
- *
- * @param targetApp The app which the request has to be valid
- * @param req The request to analyze
- * @returns {string|true} True if success or the string of the error if not.
- */
-Worker.prototype.checkRequest = function checkRequest(targetApp, req) {
-  var targetName = reqToAppName(req);
-  switch (targetApp.service) {
-    case 'gitlab': {
-      if (!req.headers['x-gitlab-token']) {
-        return util.format('[%s] Received invalid request for app %s (no headers found)', new Date().toISOString(), targetName);
-      }
-
-      if (req.headers['x-gitlab-token'] !== targetApp.secret) {
-        return util.format('[%s] Received invalid request for app %s (not matching secret)', new Date().toISOString(), targetName);
-      }
-      break;
-    }
-    case 'jenkins': {
-      // ip must match the secret
-      if (req.ip.indexOf(targetApp.secret) < 0) {
-        return util.format('[%s] Received request from %s for app %s but ip configured was %s', new Date().toISOString(), req.ip, targetName, targetApp.secret);
-      }
-
-      var body = JSON.parse(req.body);
-      if (body.build.status !== 'SUCCESS') {
-        return util.format('[%s] Received valid hook but with failure build for app %s', new Date().toISOString(), targetName);
-      }
-      if (targetApp.branch && body.build.scm.branch.indexOf(targetApp.branch) < 0) {
-        return util.format('[%s] Received valid hook but with a branch %s than configured for app %s', new Date().toISOString(), body.build.scm.branch, targetName);
-      }
-      break;
-    }
-    case 'droneci': {
-      // Authorization header must match configured secret
-      if (!req.headers['Authorization']) {
-        return util.format('[%s] Received invalid request for app %s (no headers found)', new Date().toISOString(), targetName);
-      }
-      if (req.headers['Authorization'] !== targetApp.secret) {
-        return util.format('[%s] Received request from %s for app %s but incorrect secret', new Date().toISOString(), req.ip, targetName);
-      }
-
-      var data = JSON.parse(req.body);
-      if (data.build.status !== 'SUCCESS') {
-        return util.format('[%s] Received valid hook but with failure build for app %s', new Date().toISOString(), targetName);
-      }
-      if (targetApp.branch && data.build.branch.indexOf(targetApp.branch) < 0) {
-        return util.format('[%s] Received valid hook but with a branch %s than configured for app %s', new Date().toISOString(), data.build.branch, targetName);
-      }
-      break;
-    }
-    case 'bitbucket': {
-      var tmp = JSON.parse(req.body);
-      var ip = targetApp.secret || '104.192.143.0/24';
-      var configured = ipaddr.parseCIDR(ip);
-      var source = ipaddr.parse(req.ip);
-
-      if (!source.match(configured)) {
-        return util.format('[%s] Received request from %s for app %s but ip configured was %s', new Date().toISOString(), req.ip, targetName, ip);
-      }
-      if (!tmp.push) {
-        return util.format("[%s] Received valid hook but without 'push' data for app %s", new Date().toISOString(), targetName);
-      }
-      if (targetApp.branch && tmp.push.changes[0] && tmp.push.changes[0].new.name.indexOf(targetApp.branch) < 0) {
-        return util.format('[%s] Received valid hook but with a branch %s than configured for app %s', new Date().toISOString(), tmp.push.changes[0].new.name, targetName);
-      }
-      break;
-    }
-    case 'gogs': {
-      if (!req.headers['x-gogs-event'] || !req.headers['x-gogs-signature']) {
-        return util.format('[%s] Received invalid request for app %s (no headers found)', new Date().toISOString(), targetName);
-      }
-
-      // compute hash of body with secret, github should send this to verify authenticity
-      var temp = crypto.createHmac('sha256', targetApp.secret);
-      temp.update(req.body, 'utf-8');
-      var hash = temp.digest('hex');
-
-      if (hash !== req.headers['x-gogs-signature']) {
-        return util.format('[%s] Received invalid request for app %s', new Date().toISOString(), targetName);
-      }
-
-      var body = JSON.parse(req.body)
-      if (targetApp.branch) {
-        var regex = new RegExp('/refs/heads/' + targetApp.branch)
-        if (!regex.test(body.ref)) {
-          return util.format('[%s] Received valid hook but with a branch %s than configured for app %s', new Date().toISOString(), body.ref, targetName);
-        }
-      }
-      break;
-    }
-    case 'github' :
-    default: {
-      if (!req.headers['x-github-event'] || !req.headers['x-hub-signature']) {
-        return util.format('[%s] Received invalid request for app %s (no headers found)', new Date().toISOString(), targetName);
-      }
-
-      // compute hash of body with secret, github should send this to verify authenticity
-      var temp = crypto.createHmac('sha1', targetApp.secret);
-      temp.update(req.body, 'utf-8');
-      var hash = temp.digest('hex');
-
-      if ('sha1=' + hash !== req.headers['x-hub-signature']) {
-        return util.format('[%s] Received invalid request for app %s', new Date().toISOString(), targetName);
-      }
-
-      var body = JSON.parse(req.body)
-      if (targetApp.branch) {
-        var regex = new RegExp('/refs/heads/' + targetApp.branch)
-        if (!regex.test(body.ref)) {
-          return util.format('[%s] Received valid hook but with a branch %s than configured for app %s', new Date().toISOString(), body.ref, targetName);
-        }
-      }
-      break;
-    }
-  }
-  return false;
-};
-
-/**
- * Lets start our server
+ * Lets start our polling
  */
 Worker.prototype.start = function () {
   var self = this;
-  this.server.listen(this.opts.port, function () {
-    console.log('Server is ready and listen on port %s', self.port);
-  });
+  setInterval(() => {
+    self._fetchRepositories();
+  }, self.pollInterval);
+  // check if up-to-date on start
+  self._fetchRepositories();
 };
 
 /**
@@ -320,24 +177,6 @@ function logCallback(cb, message) {
 }
 
 /**
- * Given a request, returns the name of the target App.
- *
- * Example:
- * Call to 34.23.34.54:3000/api-2
- * Will return 'api-2'
- *
- * @param req The request to be analysed
- * @returns {string|null} The name of the app, or null if not found.
- */
-function reqToAppName(req) {
-  var targetName = null;
-  try {
-    targetName = req.url.split('/').pop();
-  } catch (e) {}
-  return targetName || null;
-}
-
-/**
  * Wraps the node spawn function to work as exec (line, options, callback).
  * This avoid the maxBuffer issue, as no buffer will be stored.
  *
@@ -348,4 +187,18 @@ function reqToAppName(req) {
 function spawnAsExec(command, options, cb) {
   var child = spawn('eval', [command], options);
   child.on('close', cb);
+}
+
+function updateCWD(targetApp, cb) {
+  // if cwd is provided, we expect that it isnt a pm2 app
+  if (targetApp.cwd) return cb();
+
+  // try to get the cwd to execute it correctly
+  pm2.describe(targetName, function (err, apps) {
+    if (err || !apps || apps.length === 0) return cb(err || new Error('Application not found'));
+
+    // execute the actual command in the cwd of the application
+    targetApp.cwd = apps[0].pm_cwd ? apps[0].pm_cwd : apps[0].pm2_env.pm_cwd;
+    return cb();
+  });
 }
