@@ -89,12 +89,6 @@ Worker.prototype.updateApp = function (targetName) {
   var targetApp = this.apps[targetName];
   if (!targetApp) return;
 
-  var error = this.checkRequest(targetApp, req);
-  if (error) {
-    console.log(error);
-    return;
-  }
-
   console.log('[%s] Found an update for app %s', new Date().toISOString(), targetName);
 
   var execOptions = {
