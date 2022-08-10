@@ -141,6 +141,7 @@ Worker.prototype.updateApp = function (targetName) {
  */
 Worker.prototype.start = function () {
   var self = this;
+  console.log("[%s] Polling interval is %ss", Math.floor(self.pollInterval / 1000));
   setInterval(() => {
     self._fetchRepositories();
   }, self.pollInterval);
